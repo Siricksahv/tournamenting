@@ -1,0 +1,1446 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Torneo K.O. Doble Eliminación</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        heading: ['Consolas', 'Monaco', 'monospace'],
+                        body: ['Consolas', 'Monaco', 'monospace'],
+                    },
+                    colors: {
+                        arcade: {
+                            bg: '#0a0a0f',
+                            card: '#151520',
+                            primary: '#facc15', // Gold
+                            secondary: '#e81cff', // Neon Pink
+                            accent: '#00f0ff', // Neon Cyan
+                            dim: '#334155'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & Babel -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- html2canvas para exportación de imágenes perfecta -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+    <style>
+        body {
+            background-color: #0a0a0f;
+            color: white;
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(232, 28, 255, 0.05), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(0, 240, 255, 0.05), transparent 25%);
+            overflow: hidden; /* Evitar scrollbar doble, se maneja internamente */
+        }
+        
+        /* Custom Arcade Scrollbar */
+        ::-webkit-scrollbar {
+            height: 10px;
+            width: 10px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #151520;
+            border-radius: 5px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 5px;
+            border: 2px solid #151520;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #e81cff;
+        }
+
+        .neon-text {
+            text-shadow: 0 0 10px rgba(232,28,255,0.7), 0 0 20px rgba(232,28,255,0.5);
+        }
+        .neon-border {
+            box-shadow: 0 0 10px rgba(0,240,255,0.3);
+        }
+        
+        .winner-row {
+            background: linear-gradient(90deg, rgba(250, 204, 21, 0.2) 0%, transparent 100%);
+            border-left: 4px solid #facc15;
+        }
+        .loser-row {
+            opacity: 0.5;
+            filter: grayscale(100%);
+        }
+        
+        .fade-in {
+            animation: fadeIn 0.4s ease-out forwards;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Animación para el espacio (Spacer) del Drag & Drop */
+        .spacer-expand {
+            animation: spacerExpand 0.2s ease-out forwards;
+            transform-origin: center;
+        }
+
+        @keyframes spacerExpand {
+            from { height: 0; opacity: 0; margin-top: 0; margin-bottom: 0; }
+            to { height: 2.5rem; opacity: 1; margin-top: 0.25rem; margin-bottom: 0.25rem; }
+        }
+
+        /* Estilos para impresión y exportación a PDF nativa */
+        @media print {
+            @page {
+                size: auto; 
+                margin: 5mm;
+            }
+            body, html {
+                background-color: #0a0a0f !important;
+                color: white !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                overflow: visible !important;
+                height: auto !important;
+                width: auto !important;
+            }
+            /* Ocultar elementos de Interfaz (botones, menú) */
+            .no-print {
+                display: none !important;
+            }
+            /* Expandir los contenedores para mostrar todo el bracket sin cortes */
+            .fixed.inset-0 {
+                position: static !important;
+                height: max-content !important;
+                width: max-content !important;
+                overflow: visible !important;
+                display: block !important;
+            }
+            #bracket-container {
+                position: relative !important;
+                overflow: visible !important;
+                height: max-content !important;
+                width: max-content !important;
+                border: none !important;
+                background: none !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                display: block !important;
+            }
+            ::-webkit-scrollbar {
+                display: none !important;
+            }
+            svg {
+                overflow: visible !important;
+            }
+            /* Forzar que los colores de fondo Arcade se impriman */
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+        }
+    </style>
+</head>
+<body class="font-body antialiased h-screen w-screen">
+
+    <div id="root" class="h-full w-full flex flex-col"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- CORE BRACKET LOGIC ---
+        
+        // Generates the graph for N players (where N is a power of 2)
+        const generateBracketStructure = (participants) => {
+            let n = participants.length;
+            let nextPow2 = Math.pow(2, Math.ceil(Math.log2(n)));
+            if (nextPow2 < 4) nextPow2 = 4; // Minimum 4 for a visual double elim bracket
+
+            // 1. Pad with Byes
+            let padded = [...participants];
+            for (let i = n; i < nextPow2; i++) {
+                padded.push({ id: `bye-${i}`, name: 'LIBRE', isBye: true });
+            }
+
+            let matches = {};
+            let log2 = Math.log2(nextPow2);
+
+            // 2. Create WB Matches
+            for (let r = 1; r <= log2; r++) {
+                let numMatches = nextPow2 / Math.pow(2, r);
+                for (let m = 1; m <= numMatches; m++) {
+                    matches[`W${r}-${m}`] = { id: `W${r}-${m}`, bracket: 'W', round: r, matchNum: m, p1: null, p2: null, winner: null, loser: null, characters: {} };
+                }
+            }
+
+            // 3. Create LB Matches
+            let numLBRounds = 2 * log2 - 2;
+            if (numLBRounds < 1) numLBRounds = 1;
+            for (let r = 1; r <= numLBRounds; r++) {
+                 let power = Math.floor((r + 3) / 2);
+                 let numMatches = nextPow2 / Math.pow(2, power);
+                 for (let m = 1; m <= numMatches; m++) {
+                    matches[`L${r}-${m}`] = { id: `L${r}-${m}`, bracket: 'L', round: r, matchNum: m, p1: null, p2: null, winner: null, loser: null, characters: {} };
+                 }
+            }
+
+            // 4. Create GF Matches
+            matches[`F1-1`] = { id: `F1-1`, bracket: 'F', round: 1, matchNum: 1, p1: null, p2: null, winner: null, loser: null, characters: {}, label: 'Gran Final' };
+            matches[`F2-1`] = { id: `F2-1`, bracket: 'F', round: 2, matchNum: 1, p1: null, p2: null, winner: null, loser: null, characters: {}, label: 'Reset de Llave' };
+
+            // 5. Route Winners Bracket
+            for (let r = 1; r <= log2; r++) {
+                let numMatches = nextPow2 / Math.pow(2, r);
+                for (let m = 1; m <= numMatches; m++) {
+                    let nextW, nextL, slotW, slotL;
+
+                    if (r < log2) {
+                        nextW = `W${r+1}-${Math.ceil(m/2)}`;
+                        slotW = (m % 2 !== 0) ? 'p1' : 'p2';
+                    } else {
+                        nextW = `F1-1`;
+                        slotW = 'p1';
+                    }
+
+                    if (r === 1) {
+                        nextL = `L1-${Math.ceil(m/2)}`;
+                        slotL = (m % 2 !== 0) ? 'p1' : 'p2';
+                    } else {
+                        let lbRound = 2 * r - 2;
+                        nextL = `L${lbRound}-${m}`;
+                        slotL = 'p1'; 
+                    }
+                    matches[`W${r}-${m}`].nextW = nextW;
+                    matches[`W${r}-${m}`].slotW = slotW;
+                    matches[`W${r}-${m}`].nextL = nextL; 
+                    matches[`W${r}-${m}`].slotL = slotL;
+                }
+            }
+
+            // 6. Route Losers Bracket
+            for (let r = 1; r <= numLBRounds; r++) {
+                 let power = Math.floor((r + 3) / 2);
+                 let numMatches = nextPow2 / Math.pow(2, power);
+                 for (let m = 1; m <= numMatches; m++) {
+                    let nextW, slotW;
+                    if (r < numLBRounds) {
+                        if (r % 2 !== 0) { 
+                            nextW = `L${r+1}-${m}`;
+                            slotW = 'p2'; 
+                        } else { 
+                            nextW = `L${r+1}-${Math.ceil(m/2)}`;
+                            slotW = (m % 2 !== 0) ? 'p1' : 'p2';
+                        }
+                    } else { 
+                        nextW = `F1-1`;
+                        slotW = 'p2';
+                    }
+                    matches[`L${r}-${m}`].nextW = nextW;
+                    matches[`L${r}-${m}`].slotW = slotW;
+                 }
+            }
+
+            // 7. Seed W1 Matches
+            let realPlayers = padded.filter(p => !p.isBye);
+            let byes = padded.filter(p => p.isBye);
+            let slots = new Array(nextPow2);
+            let slotIdx = 0;
+            
+            for (let i = 0; i < realPlayers.length; i++) {
+                slots[slotIdx] = realPlayers[i];
+                slotIdx += 2;
+                if (slotIdx >= nextPow2) slotIdx = 1;
+            }
+            for (let i = 0; i < byes.length; i++) {
+                slots[slotIdx] = byes[i];
+                slotIdx += 2;
+                if (slotIdx >= nextPow2) slotIdx = 1;
+            }
+
+            for (let m = 1; m <= nextPow2 / 2; m++) {
+                matches[`W1-${m}`].p1 = slots[(m-1)*2];
+                matches[`W1-${m}`].p2 = slots[(m-1)*2 + 1];
+            }
+
+            return matches;
+        };
+
+        const declareWinnerLogic = (draft, matchId, winnerId) => {
+            const match = draft[matchId];
+            if (match.winner) return;
+
+            const isP1 = match.p1 && match.p1.id === winnerId;
+            const winner = isP1 ? match.p1 : match.p2;
+            const loser = isP1 ? match.p2 : match.p1;
+
+            match.winner = winner;
+            match.loser = loser;
+
+            const winnerChar = match.characters && match.characters[winner.id];
+            const loserChar = match.characters && match.characters[loser.id];
+
+            if (match.bracket === 'F') {
+                if (match.round === 1) {
+                    if (winner.id === match.p1.id) { 
+                        draft['F2-1'].status = 'cancelled';
+                        draft.champion = winner;
+                    } else { 
+                        draft['F2-1'].p1 = match.p1;
+                        draft['F2-1'].p2 = match.p2;
+                        if (!draft['F2-1'].characters) draft['F2-1'].characters = {};
+                        if (match.characters && match.characters[match.p1.id]) {
+                            draft['F2-1'].characters[match.p1.id] = match.characters[match.p1.id];
+                        }
+                        if (match.characters && match.characters[match.p2.id]) {
+                            draft['F2-1'].characters[match.p2.id] = match.characters[match.p2.id];
+                        }
+                    }
+                } else if (match.round === 2) {
+                    draft.champion = winner;
+                }
+                return;
+            }
+
+            if (match.nextW) {
+                draft[match.nextW][match.slotW] = winner;
+                if (winnerChar) {
+                    if (!draft[match.nextW].characters) draft[match.nextW].characters = {};
+                    draft[match.nextW].characters[winner.id] = winnerChar;
+                }
+            }
+            if (match.nextL) {
+                draft[match.nextL][match.slotL] = loser;
+                if (loserChar) {
+                    if (!draft[match.nextL].characters) draft[match.nextL].characters = {};
+                    draft[match.nextL].characters[loser.id] = loserChar;
+                }
+            }
+        };
+
+        const flushByesLogic = (draft) => {
+            let changed = true;
+            while (changed) {
+                changed = false;
+                Object.values(draft).forEach(m => {
+                    if (m.id && !m.winner && m.p1 && m.p2 && m.status !== 'cancelled') {
+                        if (m.p1.isBye && !m.p2.isBye) {
+                            declareWinnerLogic(draft, m.id, m.p2.id);
+                            changed = true;
+                        } else if (!m.p1.isBye && m.p2.isBye) {
+                            declareWinnerLogic(draft, m.id, m.p1.id);
+                            changed = true;
+                        } else if (m.p1.isBye && m.p2.isBye) {
+                            declareWinnerLogic(draft, m.id, m.p1.id);
+                            changed = true;
+                        }
+                    }
+                });
+            }
+        };
+
+        // --- REACT COMPONENTS ---
+
+        const SVGSword = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5"></polyline><line x1="13" y1="19" x2="19" y2="13"></line><line x1="16" y1="16" x2="20" y2="20"></line><line x1="19" y1="21" x2="21" y2="19"></line></svg>
+        );
+
+        const SVGUser = () => (
+             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+        );
+
+        const SVGShuffle = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+        );
+
+        const SVGTrash = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+        );
+
+        const SVGMenu = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        );
+
+        const SVGClose = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        );
+
+        const SVGChevronDown = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        );
+
+        const SVGChevronRight = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        );
+
+        const SVGCheck = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00ff00" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="drop-shadow-[0_0_5px_rgba(0,255,0,0.8)]"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        );
+
+        const SVGSave = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+        );
+
+        const SVGFolder = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+        );
+
+        const SVGFlowchart = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="16" y="3" width="6" height="6" rx="1"></rect><rect x="2" y="9" width="6" height="6" rx="1"></rect><rect x="16" y="15" width="6" height="6" rx="1"></rect><polyline points="8 12 12 12 12 6 16 6"></polyline><polyline points="12 12 12 18 16 18"></polyline></svg>
+        );
+
+        const SVGArrowUp = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+        );
+
+        const SVGArrowDown = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>
+        );
+
+        const SVGDragHandle = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"></circle><circle cx="15" cy="6" r="1.5"></circle><circle cx="9" cy="12" r="1.5"></circle><circle cx="15" cy="12" r="1.5"></circle><circle cx="9" cy="18" r="1.5"></circle><circle cx="15" cy="18" r="1.5"></circle></svg>
+        );
+
+        const BracketLines = ({ matches, isConceptual = false }) => {
+            const [lines, setLines] = useState([]);
+            const svgRef = useRef(null);
+
+            useEffect(() => {
+                const drawLines = () => {
+                    if (!svgRef.current) return;
+                    
+                    const svgRect = svgRef.current.getBoundingClientRect();
+                    const newLines = [];
+                    const prefix = isConceptual ? 'c-' : '';
+
+                    Object.values(matches).forEach(match => {
+                        if (match.status === 'cancelled' || !match.id) return;
+                        
+                        const startEl = document.getElementById(`${prefix}match-${match.id}`);
+                        if (!startEl) return;
+                        
+                        const startRect = startEl.getBoundingClientRect();
+                        
+                        // Coordenadas matemáticas perfectas relativas al SVG (Inmunes al scroll)
+                        const startX = startRect.right - svgRect.left;
+                        const startY = startRect.top - svgRect.top + (startRect.height / 2);
+
+                        if (match.nextW) {
+                            const endSlotEl = document.getElementById(`${prefix}slot-${match.nextW}-${match.slotW}`);
+                            
+                            if (endSlotEl) {
+                                const endRect = endSlotEl.getBoundingClientRect();
+                                const endX = endRect.left - svgRect.left;
+                                const endY = endRect.top - svgRect.top + (endRect.height / 2);
+                                
+                                const midX = startX + (endX - startX) / 2;
+                                const path = `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${endX} ${endY}`;
+                                
+                                newLines.push({
+                                    id: `win-${match.id}-${match.nextW}`,
+                                    path,
+                                    // Utiliza colores Arcade en ambos modos
+                                    color: match.bracket === 'W' ? '#00f0ff' : (match.bracket === 'F' ? '#facc15' : '#e81cff'),
+                                    dashed: false,
+                                    opacity: isConceptual ? 1 : 0.9,
+                                    thickness: isConceptual ? "2" : "3"
+                                });
+                            }
+                        }
+                    });
+
+                    setLines(newLines);
+                };
+
+                const timer = setTimeout(drawLines, 300); 
+                window.addEventListener('resize', drawLines);
+                
+                return () => {
+                    window.removeEventListener('resize', drawLines);
+                    clearTimeout(timer);
+                };
+            }, [matches, isConceptual]);
+
+            return (
+                <svg ref={svgRef} className="absolute top-0 left-0 w-full h-full pointer-events-none z-0">
+                    {lines.map(line => (
+                        <path
+                            key={line.id}
+                            d={line.path}
+                            fill="none"
+                            stroke={line.color}
+                            strokeWidth={line.thickness}
+                            strokeDasharray={line.dashed ? "6,4" : "none"}
+                            opacity={line.opacity}
+                            className="transition-all duration-300 ease-in-out"
+                        />
+                    ))}
+                </svg>
+            );
+        };
+
+        // --- COMPONENTE DE TARJETA PARA EL MAPA CONCEPTUAL (REDISEÑADO CON SVG INFALIBLE Y COLORES ARCADE) ---
+        const ConceptualMatchCard = ({ match }) => {
+            if (!match || match.status === 'cancelled') return null;
+
+            const isP1Winner = match.winner && match.p1 && match.winner.id === match.p1.id;
+            const isP2Winner = match.winner && match.p2 && match.winner.id === match.p2.id;
+
+            const renderPlayer = (player, isWinner, slotId) => {
+                const isReady = player && !player.isBye;
+                return (
+                    <div id={slotId} className={`flex flex-col p-2 rounded-lg border ${isWinner ? 'bg-arcade-primary/10 border-arcade-primary' : 'bg-[#0a0a0f] border-slate-700/50'}`}>
+                        <div className="flex justify-between items-start w-full mb-1">
+                            <span className={`font-bold text-sm leading-relaxed pb-1 break-words pr-2 ${player?.isBye ? 'text-slate-500' : (isWinner ? 'text-arcade-primary' : 'text-white')}`}>
+                                {player ? player.name : 'TBD'}
+                            </span>
+                            {isWinner && (
+                                /* Etiqueta Ganador dibujada en SVG puro */
+                                <div className="shrink-0 mt-0.5 shadow-[0_0_8px_rgba(250,204,21,0.4)] rounded-full bg-arcade-primary/20 flex items-center justify-center">
+                                    <svg width="60" height="18" viewBox="0 0 60 18" className="block">
+                                        <rect x="0.5" y="0.5" width="59" height="17" rx="8.5" fill="#facc15" stroke="#fef08a" strokeWidth="1" />
+                                        <text x="30" y="13" textAnchor="middle" fill="#000000" fontSize="9" fontWeight="900" fontFamily="Arial, Helvetica, sans-serif" letterSpacing="0.5">GANADOR</text>
+                                    </svg>
+                                </div>
+                            )}
+                        </div>
+                        {isReady && match.characters && match.characters[player.id] && (
+                            <div className="text-xs text-slate-400 font-medium pb-1">
+                                Personaje: <span className="text-arcade-accent font-bold">{match.characters[player.id]}</span>
+                            </div>
+                        )}
+                        {isReady && (!match.characters || !match.characters[player.id]) && (
+                            <div className="text-xs text-slate-600 italic pb-1">Sin personaje definido</div>
+                        )}
+                    </div>
+                );
+            };
+
+            return (
+                <div id={`c-match-${match.id}`} className="bg-arcade-card border-2 border-arcade-dim rounded-xl p-3 shadow-lg relative z-10 w-56 sm:w-64" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
+                    
+                    {/* ID de la Partida dibujado en SVG puro */}
+                    <div className="absolute -top-3 -right-3 z-20 shadow-lg rounded-full bg-arcade-dim flex items-center justify-center border border-slate-600">
+                        <svg width="42" height="22" viewBox="0 0 42 22" className="block">
+                            <rect x="1" y="1" width="40" height="20" rx="10" fill="#334155" stroke="#151520" strokeWidth="2" />
+                            <text x="21" y="15.5" textAnchor="middle" fill="#ffffff" fontSize="11" fontWeight="bold" fontFamily="Arial, Helvetica, sans-serif">{match.id}</text>
+                        </svg>
+                    </div>
+                    
+                    <div className="text-[10px] text-arcade-accent font-bold uppercase tracking-wider mb-3 text-center border-b border-arcade-dim pb-1">
+                        {match.label || `Partida ${match.id}`}
+                    </div>
+                    
+                    <div className="flex flex-col gap-2 relative">
+                        {renderPlayer(match.p1, isP1Winner, `c-slot-${match.id}-p1`)}
+                        
+                        {/* Etiqueta VS dibujada en SVG puro */}
+                        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-20 shadow-lg rounded-full bg-arcade-card flex items-center justify-center border border-arcade-dim">
+                            <svg width="28" height="20" viewBox="0 0 28 20" className="block">
+                                <rect x="1" y="1" width="26" height="18" rx="9" fill="#151520" stroke="#334155" strokeWidth="2" />
+                                <text x="14" y="14.5" textAnchor="middle" fill="#00f0ff" fontSize="10" fontWeight="900" fontFamily="Arial, Helvetica, sans-serif">VS</text>
+                            </svg>
+                        </div>
+                        
+                        {renderPlayer(match.p2, isP2Winner, `c-slot-${match.id}-p2`)}
+                    </div>
+                </div>
+            );
+        };
+
+        const MatchCard = ({ match, onWinnerSelect, onCharacterChange }) => {
+            if (!match || match.status === 'cancelled') return null;
+
+            const isP1Winner = match.winner && match.winner.id === (match.p1 && match.p1.id);
+            const isP2Winner = match.winner && match.winner.id === (match.p2 && match.p2.id);
+
+            const renderPlayer = (player, isWinner, isLoser, slotId) => {
+                const isReady = player && !player.isBye;
+                return (
+                    <div id={slotId} className={`flex flex-col bg-arcade-bg rounded p-1.5 sm:p-2 mb-1 border border-transparent transition-all ${isWinner ? 'winner-row' : ''} ${isLoser ? 'loser-row' : ''}`}>
+                        <div className="flex justify-between items-center w-full">
+                            <span className={`font-semibold truncate pr-2 text-[11px] sm:text-sm ${player?.isBye ? 'text-arcade-dim' : 'text-white'}`}>
+                                {player ? player.name : 'TBD'}
+                            </span>
+                            
+                            {isReady && !match.winner && player && match.p1 && match.p2 && (
+                                <button 
+                                    onClick={() => onWinnerSelect(match.id, player.id)}
+                                    className="bg-arcade-secondary hover:bg-fuchsia-400 text-white text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-1 rounded transition-colors shadow-[0_0_10px_rgba(232,28,255,0.3)] hover:shadow-[0_0_15px_rgba(232,28,255,0.7)] ml-2 shrink-0"
+                                >
+                                    GANA
+                                </button>
+                            )}
+                            {isWinner && <span className="text-arcade-primary text-[10px] sm:text-xs font-bold shrink-0">WIN</span>}
+                        </div>
+                        
+                        {isReady && (
+                            <input 
+                                type="text"
+                                placeholder="Personaje..."
+                                value={match.characters?.[player.id] || ''}
+                                onChange={(e) => onCharacterChange(match.id, player.id, e.target.value)}
+                                className="bg-black/50 text-[9px] sm:text-[10px] text-arcade-accent px-1.5 py-0.5 rounded border border-slate-700/50 focus:border-arcade-primary outline-none mt-1 w-full placeholder:text-slate-600 transition-colors"
+                            />
+                        )}
+                    </div>
+                );
+            };
+
+            return (
+                <div id={`match-${match.id}`} className="bg-arcade-card border-2 border-arcade-dim rounded-lg p-1.5 sm:p-3 w-48 sm:w-64 shadow-lg shrink-0 fade-in hover:border-arcade-accent transition-all duration-300 relative z-10">
+                    <div className="absolute -top-2.5 sm:-top-3 -right-2 bg-arcade-dim text-[8px] sm:text-[9px] font-bold px-2 py-0.5 rounded-full text-white shadow">
+                        {match.id}
+                    </div>
+                    
+                    <div className="text-[10px] sm:text-xs text-slate-400 mb-1 sm:mb-2 font-bold uppercase tracking-wider font-heading sm:text-lg">
+                        {match.label || `Partida ${match.id}`}
+                    </div>
+                    
+                    <div className="flex flex-col relative">
+                        {renderPlayer(match.p1, isP1Winner, isP2Winner, `slot-${match.id}-p1`)}
+                        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-arcade-card px-1 text-[8px] sm:text-[10px] text-arcade-accent font-bold z-10 rounded">
+                            VS
+                        </div>
+                        {renderPlayer(match.p2, isP2Winner, isP1Winner, `slot-${match.id}-p2`)}
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [view, setView] = useState('SETUP');
+            const [players, setPlayers] = useState([]);
+            const [newPlayerName, setNewPlayerName] = useState('');
+            const [bracketDraft, setBracketDraft] = useState(null);
+            const [errorMsg, setErrorMsg] = useState('');
+            const fileInputRef = useRef(null);
+            
+            // Estado para el Modo de Exportación de Mapa Conceptual
+            const [isExportingMap, setIsExportingMap] = useState(false);
+            
+            // Estados para selección y reordenamiento manual
+            const [selectedIds, setSelectedIds] = useState([]);
+
+            // NUEVOS Estados para el Drag & Drop Múltiple Visual
+            const [draggedIds, setDraggedIds] = useState([]);
+            const [dragOverId, setDragOverId] = useState(null);
+            const [dropPosition, setDropPosition] = useState('before'); // 'before' o 'after'
+            
+            // Navegador Rápido
+            const [isNavOpen, setIsNavOpen] = useState(false);
+            const [openSections, setOpenSections] = useState({ w: true, l: false, f: true });
+
+            const toggleSection = (sec) => setOpenSections(prev => ({ ...prev, [sec]: !prev[sec] }));
+
+            const scrollToSection = (sectionId) => {
+                const target = document.getElementById(sectionId);
+                if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+            };
+
+            const scrollToMatch = (matchId) => {
+                const element = document.getElementById(`match-${matchId}`);
+                if (element) {
+                    element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                    element.classList.add('border-arcade-accent', 'shadow-[0_0_30px_rgba(0,240,255,0.8)]', 'scale-105', '!z-50');
+                    setTimeout(() => {
+                        element.classList.remove('border-arcade-accent', 'shadow-[0_0_30px_rgba(0,240,255,0.8)]', 'scale-105', '!z-50');
+                    }, 1000);
+                    if (window.innerWidth < 640) setIsNavOpen(false);
+                }
+            };
+
+            const handleAddPlayer = (e) => {
+                if (e) e.preventDefault();
+                
+                const namesToAdd = newPlayerName.split(/\r?\n/).map(n => n.trim()).filter(n => n !== '');
+                if (namesToAdd.length === 0) return;
+
+                let currentPlayers = [...players];
+                let duplicates = 0;
+
+                namesToAdd.forEach(name => {
+                    if (currentPlayers.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+                        duplicates++;
+                    } else {
+                        currentPlayers.push({ id: 'p-' + Date.now() + '-' + Math.floor(Math.random() * 10000), name });
+                    }
+                });
+
+                setPlayers(currentPlayers);
+                setNewPlayerName('');
+                setErrorMsg(duplicates > 0 ? `Se omitieron ${duplicates} nombre(s) porque ya estaban en la lista.` : '');
+            };
+
+            const removePlayer = (id) => {
+                setPlayers(players.filter(p => p.id !== id));
+                setSelectedIds(selectedIds.filter(selId => selId !== id)); 
+            };
+
+            const togglePlayerSelection = (id) => {
+                setSelectedIds(prev => prev.includes(id) ? prev.filter(selId => selId !== id) : [...prev, id]);
+            };
+
+            const moveSelectedUp = () => {
+                if (selectedIds.length === 0) return;
+                const newPlayers = [...players];
+                for (let i = 1; i < newPlayers.length; i++) {
+                    if (selectedIds.includes(newPlayers[i].id) && !selectedIds.includes(newPlayers[i-1].id)) {
+                        let temp = newPlayers[i-1];
+                        newPlayers[i-1] = newPlayers[i];
+                        newPlayers[i] = temp;
+                    }
+                }
+                setPlayers(newPlayers);
+            };
+
+            const moveSelectedDown = () => {
+                if (selectedIds.length === 0) return;
+                const newPlayers = [...players];
+                for (let i = newPlayers.length - 2; i >= 0; i--) {
+                    if (selectedIds.includes(newPlayers[i].id) && !selectedIds.includes(newPlayers[i+1].id)) {
+                        let temp = newPlayers[i+1];
+                        newPlayers[i+1] = newPlayers[i];
+                        newPlayers[i] = temp;
+                    }
+                }
+                setPlayers(newPlayers);
+            };
+
+            const shufflePlayers = () => {
+                const shuffled = [...players].sort(() => Math.random() - 0.5);
+                setPlayers(shuffled);
+            };
+
+            const startTournament = () => {
+                let currentPlayers = [...players];
+                if (newPlayerName.trim() !== '') {
+                    const namesToAdd = newPlayerName.split(/\r?\n/).map(n => n.trim()).filter(n => n !== '');
+                    namesToAdd.forEach(name => {
+                        if (!currentPlayers.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+                            currentPlayers.push({ id: 'p-' + Date.now() + '-' + Math.floor(Math.random() * 10000), name });
+                        }
+                    });
+                    setPlayers(currentPlayers);
+                    setNewPlayerName('');
+                }
+
+                if (currentPlayers.length < 3) {
+                    setErrorMsg('Se requieren al menos 3 jugadores para un torneo válido.');
+                    return;
+                }
+                
+                setErrorMsg('');
+                const initialDraft = generateBracketStructure(currentPlayers);
+                flushByesLogic(initialDraft);
+                setBracketDraft(initialDraft);
+                setView('TOURNAMENT');
+            };
+
+            const handleDeclareWinner = (matchId, winnerId) => {
+                const newDraft = { ...bracketDraft };
+                declareWinnerLogic(newDraft, matchId, winnerId);
+                flushByesLogic(newDraft); 
+                setBracketDraft(newDraft);
+
+                // Auto-desplazamiento al siguiente match disponible
+                setTimeout(() => {
+                    const matches = Object.values(newDraft).filter(m => m.id && m.status !== 'cancelled');
+                    
+                    // Ordenar por prioridad: Ganadores (W) -> Perdedores (L) -> Finales (F), luego por ronda
+                    const bracketOrder = { 'W': 1, 'L': 2, 'F': 3 };
+                    matches.sort((a, b) => {
+                        if (bracketOrder[a.bracket] !== bracketOrder[b.bracket]) {
+                            return bracketOrder[a.bracket] - bracketOrder[b.bracket];
+                        }
+                        if (a.round !== b.round) {
+                            return a.round - b.round;
+                        }
+                        return a.matchNum - b.matchNum;
+                    });
+
+                    // Buscar el primer match que tenga p1 y p2 (que no sean Byes) y sin ganador
+                    const nextReady = matches.find(m => 
+                        m.p1 && !m.p1.isBye && 
+                        m.p2 && !m.p2.isBye && 
+                        !m.winner
+                    );
+
+                    // Evitar el salto de cámara si se está exportando el mapa
+                    if (nextReady && !isExportingMap) {
+                        scrollToMatch(nextReady.id);
+                    }
+                }, 150); // Retraso sutil para que React renderice la victoria antes de mover la cámara
+            };
+            
+            const handleCharacterChange = (matchId, playerId, characterName) => {
+                setBracketDraft(draft => {
+                    const newDraft = { ...draft };
+                    newDraft[matchId] = { ...newDraft[matchId] };
+                    if (!newDraft[matchId].characters) newDraft[matchId].characters = {};
+                    newDraft[matchId].characters = { ...newDraft[matchId].characters, [playerId]: characterName };
+                    return newDraft;
+                });
+            };
+
+            // Lógica para exportar el mapa conceptual
+            useEffect(() => {
+                if (isExportingMap) {
+                    window.scrollTo(0, 0); // Forzar scroll 0,0 para evitar desfases de html2canvas
+                    const timer = setTimeout(() => {
+                        const container = document.getElementById('conceptual-map-container');
+                        if (!container) return;
+                        
+                        html2canvas(container, {
+                            backgroundColor: '#0a0a0f', // Fondo oscuro temático arcade
+                            scale: 2, 
+                            logging: false,
+                            useCORS: true,
+                            scrollX: 0, // Ignorar offsets
+                            scrollY: 0  // Ignorar offsets
+                        }).then(canvas => {
+                            const link = document.createElement('a');
+                            link.download = `Mapa-Conceptual-Torneo-${new Date().toISOString().slice(0,10)}.png`;
+                            link.href = canvas.toDataURL('image/png');
+                            link.click();
+                            setIsExportingMap(false);
+                        }).catch(err => {
+                            console.error('Error exportando mapa conceptual:', err);
+                            alert('Hubo un error al generar el mapa. Intenta nuevamente.');
+                            setIsExportingMap(false);
+                        });
+                    }, 1200); // Esperar un momento a que las líneas matemáticas se fijen antes de la foto
+                    
+                    return () => clearTimeout(timer);
+                }
+            }, [isExportingMap]);
+
+            const handleExport = () => {
+                if (!bracketDraft) return;
+                const data = { players, bracketDraft };
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `torneo_ko_${new Date().toISOString().slice(0,10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            const handleImport = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const data = JSON.parse(event.target.result);
+                        if (data.players && data.bracketDraft) {
+                            setPlayers(data.players);
+                            setBracketDraft(data.bracketDraft);
+                            setErrorMsg('');
+                            setView('TOURNAMENT');
+                        } else {
+                            setErrorMsg('El archivo no tiene un formato de torneo válido.');
+                        }
+                    } catch (err) {
+                        setErrorMsg('Error al leer el archivo JSON.');
+                    }
+                    if (fileInputRef.current) fileInputRef.current.value = ''; 
+                };
+                reader.readAsText(file);
+            };
+
+            // Auto-desplazamiento a la Final 2 cuando ocurra el Bracket Reset
+            useEffect(() => {
+                if (view === 'TOURNAMENT' && bracketDraft && bracketDraft['F2-1'] && bracketDraft['F2-1'].p1 && !bracketDraft['F2-1'].winner) {
+                    setTimeout(() => {
+                        const final2 = document.getElementById('match-F2-1');
+                        if (final2 && !isExportingMap) { // Evitar auto-scroll si estamos exportando
+                            final2.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+                        }
+                    }, 300);
+                }
+            }, [bracketDraft, view, isExportingMap]);
+
+            if (view === 'SETUP') {
+                
+                // Componente holográfico que se muestra donde aterrizarán los elementos arrastrados
+                const DragSpacer = ({ count }) => (
+                    <div className="spacer-expand bg-arcade-accent/10 border-2 border-dashed border-arcade-accent rounded flex items-center justify-center shadow-[0_0_15px_rgba(0,240,255,0.2)] pointer-events-none">
+                        <span className="text-arcade-accent text-[10px] sm:text-xs font-bold uppercase tracking-widest bg-arcade-bg/80 px-3 py-1 rounded-full">
+                            Colocar {count} {count === 1 ? 'jugador' : 'jugadores'} aquí
+                        </span>
+                    </div>
+                );
+
+                return (
+                    <div className="flex-grow flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+                        <div className="bg-arcade-card p-5 sm:p-8 rounded-xl shadow-[0_0_40px_rgba(232,28,255,0.15)] max-w-md w-full border border-arcade-dim my-auto">
+                            <div className="text-center mb-4 sm:mb-8">
+                                <h1 className="font-heading text-4xl sm:text-5xl text-white neon-text uppercase tracking-wide flex justify-center items-center gap-2 sm:gap-3">
+                                    <SVGSword /> K.O. Arena <SVGSword />
+                                </h1>
+                                <p className="text-slate-400 mt-1 sm:mt-2 text-xs sm:text-sm">Configuración de Doble Eliminación</p>
+                            </div>
+
+                            <form onSubmit={handleAddPlayer} className="flex gap-2 mb-4 flex-col sm:flex-row">
+                                <textarea 
+                                    value={newPlayerName}
+                                    onChange={(e) => setNewPlayerName(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleAddPlayer();
+                                        }
+                                    }}
+                                    placeholder="Nombre del jugador o pega una lista..."
+                                    className="flex-grow bg-arcade-bg text-white px-3 sm:px-4 py-2 text-sm sm:text-base rounded border border-arcade-dim focus:outline-none focus:border-arcade-accent transition-colors resize-none overflow-y-auto"
+                                    rows="2"
+                                />
+                                <button type="submit" className="bg-arcade-accent hover:bg-cyan-400 text-black font-bold px-3 sm:px-4 py-2 text-sm sm:text-base rounded transition-colors self-stretch sm:self-auto">
+                                    Añadir
+                                </button>
+                            </form>
+
+                            {errorMsg && <p className="text-red-400 text-xs mb-4 text-center">{errorMsg}</p>}
+
+                            <div className="flex justify-between items-end mb-1 px-1">
+                                <span className="text-xs sm:text-sm text-slate-400 font-bold uppercase tracking-wider">Jugadores ({players.length})</span>
+                                {players.length > 0 && (
+                                    <div className="flex items-center gap-2 sm:gap-3">
+                                        {selectedIds.length > 0 && (
+                                            <div className="flex bg-arcade-bg rounded border border-arcade-dim overflow-hidden shadow-lg fade-in">
+                                                <button onClick={moveSelectedUp} className="hover:bg-arcade-accent/20 hover:text-arcade-accent text-slate-300 transition-colors p-1 px-2 border-r border-arcade-dim" title="Subir selección">
+                                                    <SVGArrowUp />
+                                                </button>
+                                                <button onClick={moveSelectedDown} className="hover:bg-arcade-accent/20 hover:text-arcade-accent text-slate-300 transition-colors p-1 px-2" title="Bajar selección">
+                                                    <SVGArrowDown />
+                                                </button>
+                                            </div>
+                                        )}
+                                        <button 
+                                            onClick={() => { setPlayers([]); setSelectedIds([]); setDraggedIds([]); setDragOverId(null); }} 
+                                            className="text-red-500 hover:text-red-400 text-[10px] sm:text-xs font-bold transition-colors flex items-center gap-1"
+                                        >
+                                            <SVGTrash /> Borrar Todos
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div 
+                                className="bg-arcade-bg rounded p-2 mb-4 sm:mb-6 min-h-[150px] max-h-[250px] overflow-y-auto relative"
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    if (draggedIds.length > 0 && players.length > 0) {
+                                        setDragOverId('container-end');
+                                    }
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    if (!draggedIds.length) return;
+                                    const draggedPlayers = players.filter(pl => draggedIds.includes(pl.id));
+                                    const remainingPlayers = players.filter(pl => !draggedIds.includes(pl.id));
+                                    setPlayers([...remainingPlayers, ...draggedPlayers]);
+                                    setDraggedIds([]);
+                                    setDragOverId(null);
+                                }}
+                            >
+                                {players.length === 0 ? (
+                                    <div className="text-slate-500 text-center text-sm p-4 mt-8">No hay jugadores. Agrega al menos 3.</div>
+                                ) : (
+                                    <ul className="space-y-1 sm:space-y-2 pb-8">
+                                        {players.map((p, index) => {
+                                            const isSelected = selectedIds.includes(p.id);
+                                            const isDragging = draggedIds.includes(p.id);
+                                            const isDragOverTarget = dragOverId === p.id;
+                                            
+                                            // Lógica de estilos: Si se está arrastrando lo hacemos semitransparente
+                                            const draggingStyle = isDragging 
+                                                ? 'opacity-30 border-dashed border-slate-600 bg-transparent scale-[0.98]' 
+                                                : (isSelected ? 'bg-arcade-accent/20 border-arcade-accent shadow-[0_0_10px_rgba(0,240,255,0.3)]' : 'bg-slate-800/50 border-slate-700/50 hover:border-slate-500');
+
+                                            return (
+                                            <React.Fragment key={p.id}>
+                                                
+                                                {/* Espacio (Spacer) si se va a soltar ANTES de este elemento */}
+                                                {isDragOverTarget && dropPosition === 'before' && <DragSpacer count={draggedIds.length} />}
+                                                
+                                                <li 
+                                                    draggable
+                                                    onDragStart={(e) => {
+                                                        // Si arrastro un elemento seleccionado, muevo todos los seleccionados, sino, solo este.
+                                                        let idsToDrag = selectedIds.includes(p.id) ? selectedIds : [p.id];
+                                                        
+                                                        // Obtenerlos en el orden original
+                                                        const orderedDraggedIds = players.filter(pl => idsToDrag.includes(pl.id)).map(pl => pl.id);
+                                                        
+                                                        setDraggedIds(orderedDraggedIds);
+                                                        e.dataTransfer.effectAllowed = 'move';
+                                                        e.dataTransfer.setData('text/plain', JSON.stringify(orderedDraggedIds));
+                                                        
+                                                        // Crear un visual temporal nativo indicando la cantidad
+                                                        if (orderedDraggedIds.length > 1) {
+                                                            const ghost = document.createElement('div');
+                                                            ghost.className = 'bg-arcade-accent text-black font-bold px-3 py-1 rounded-full absolute -top-[1000px] left-0 z-50 text-sm shadow-lg';
+                                                            ghost.innerText = `Moviendo ${orderedDraggedIds.length} elementos`;
+                                                            document.body.appendChild(ghost);
+                                                            e.dataTransfer.setDragImage(ghost, 0, 0);
+                                                            setTimeout(() => ghost.remove(), 0);
+                                                        }
+                                                    }}
+                                                    onDragOver={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        
+                                                        if (draggedIds.includes(p.id)) return;
+                                                        
+                                                        if (dragOverId !== p.id) setDragOverId(p.id);
+                                                        
+                                                        // Determinar posición (antes o después) calculando la posición Y
+                                                        const rect = e.currentTarget.getBoundingClientRect();
+                                                        const y = e.clientY - rect.top;
+                                                        setDropPosition(y < rect.height / 2 ? 'before' : 'after');
+                                                    }}
+                                                    onDrop={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        
+                                                        if (!draggedIds.length || draggedIds.includes(p.id)) {
+                                                            setDraggedIds([]);
+                                                            setDragOverId(null);
+                                                            return;
+                                                        }
+
+                                                        const draggedPlayers = players.filter(pl => draggedIds.includes(pl.id));
+                                                        const remainingPlayers = players.filter(pl => !draggedIds.includes(pl.id));
+                                                        
+                                                        let targetIndex = remainingPlayers.findIndex(pl => pl.id === p.id);
+                                                        if (dropPosition === 'after') targetIndex += 1;
+                                                        
+                                                        remainingPlayers.splice(targetIndex, 0, ...draggedPlayers);
+                                                        setPlayers(remainingPlayers);
+                                                        
+                                                        setDraggedIds([]);
+                                                        setDragOverId(null);
+                                                    }}
+                                                    onDragEnd={() => {
+                                                        setDraggedIds([]);
+                                                        setDragOverId(null);
+                                                    }}
+                                                    className={`flex justify-between items-center p-1.5 sm:p-2 rounded border transition-all select-none ${draggingStyle}`}
+                                                >
+                                                    <div className="flex items-center gap-2 sm:gap-3">
+                                                        <div className="cursor-grab active:cursor-grabbing text-slate-500 hover:text-white shrink-0" title="Arrastra para reordenar">
+                                                            <SVGDragHandle />
+                                                        </div>
+                                                        <input 
+                                                            type="checkbox" 
+                                                            checked={isSelected}
+                                                            onChange={() => togglePlayerSelection(p.id)}
+                                                            className="w-3.5 h-3.5 sm:w-4 sm:h-4 cursor-pointer accent-cyan-400"
+                                                        />
+                                                        <span className="flex items-center gap-2 text-[11px] sm:text-sm font-semibold">
+                                                            <span className={`text-xs w-4 font-bold ${isSelected ? 'text-arcade-accent' : 'text-arcade-secondary'}`}>{index + 1}.</span> 
+                                                            <span className={isSelected ? 'text-white font-bold' : 'text-slate-200'}>{p.name}</span>
+                                                        </span>
+                                                    </div>
+                                                    <button 
+                                                        onClick={(e) => { e.stopPropagation(); removePlayer(p.id); }} 
+                                                        className="text-slate-400 hover:text-red-400 transition-colors p-1 z-10 shrink-0"
+                                                        title="Eliminar Jugador"
+                                                    >
+                                                        <SVGTrash />
+                                                    </button>
+                                                </li>
+
+                                                {/* Espacio (Spacer) si se va a soltar DESPUÉS de este elemento */}
+                                                {isDragOverTarget && dropPosition === 'after' && <DragSpacer count={draggedIds.length} />}
+                                                
+                                            </React.Fragment>
+                                        )})}
+
+                                        {/* Espacio especial para cuando se arrastra al final del contenedor vacío */}
+                                        {dragOverId === 'container-end' && <DragSpacer count={draggedIds.length} />}
+                                    </ul>
+                                )}
+                            </div>
+
+                            <div className="flex gap-2 sm:gap-4">
+                                <button 
+                                    onClick={shufflePlayers}
+                                    className="flex-1 flex items-center justify-center gap-1 sm:gap-2 border border-arcade-dim hover:border-white text-slate-300 hover:text-white py-2 sm:py-3 text-sm sm:text-base rounded font-bold transition-all"
+                                >
+                                    <SVGShuffle /> Azar
+                                </button>
+                                <button 
+                                    onClick={startTournament}
+                                    className="flex-1 bg-gradient-to-r from-arcade-secondary to-fuchsia-600 hover:from-fuchsia-500 hover:to-pink-600 text-white py-2 sm:py-3 text-sm sm:text-base rounded font-bold transition-all shadow-[0_0_15px_rgba(232,28,255,0.5)]"
+                                >
+                                    INICIAR
+                                </button>
+                            </div>
+                            
+                            <div className="mt-4 flex justify-center">
+                                <input 
+                                    type="file" 
+                                    accept=".json" 
+                                    onChange={handleImport} 
+                                    ref={fileInputRef} 
+                                    className="hidden" 
+                                />
+                                <button 
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="flex items-center gap-2 text-slate-400 hover:text-arcade-accent text-xs sm:text-sm font-bold transition-colors border border-transparent hover:border-arcade-accent/50 px-3 py-1.5 rounded"
+                                >
+                                    <SVGFolder /> Cargar Torneo Guardado
+                                </button>
+                            </div>
+                            
+                            <div className="mt-2 text-center text-[9px] sm:text-[10px] text-slate-500">
+                                Enter = Añadir | Arrastra elementos para reordenarlos fácilmente.
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            const matchesArray = Object.values(bracketDraft || {});
+            const wMatches = matchesArray.filter(m => m.bracket === 'W' && m.id);
+            const lMatches = matchesArray.filter(m => m.bracket === 'L' && m.id);
+            const fMatches = matchesArray.filter(m => m.bracket === 'F' && m.id && m.status !== 'cancelled' && (m.round === 1 || (m.round === 2 && m.p1 != null)));
+
+            const getRounds = (matches) => {
+                const rounds = {};
+                matches.forEach(m => {
+                    if(!rounds[m.round]) rounds[m.round] = [];
+                    rounds[m.round].push(m);
+                });
+                return Object.values(rounds); 
+            };
+
+            const wRounds = getRounds(wMatches);
+            const lRounds = getRounds(lMatches);
+
+            // RENDERIZADO ESPECIAL: MAPA CONCEPTUAL (SOLO VISIBLE DURANTE EXPORTACIÓN)
+            if (isExportingMap) {
+                return (
+                    <div className="fixed inset-0 bg-arcade-bg font-sans overflow-auto z-[9999]">
+                        {/* Overlay de carga que ignora el html2canvas */}
+                        <div data-html2canvas-ignore="true" className="fixed inset-0 bg-black/95 z-[10000] flex flex-col items-center justify-center text-white">
+                            <div className="animate-pulse flex flex-col items-center">
+                                <SVGFlowchart />
+                                <h2 className="text-3xl font-bold mt-4 font-heading tracking-widest text-arcade-accent text-center px-4">GENERANDO MAPA CONCEPTUAL</h2>
+                                <p className="text-slate-400 mt-2 text-center">Calculando coordenadas matemáticas perfectas...</p>
+                            </div>
+                        </div>
+
+                        {/* Contenedor del Mapa Conceptual - Limpio, sin UI, adaptado para la imagen con los colores Arcade */}
+                        <div id="conceptual-map-container" className="p-16 w-max min-w-full h-max bg-[#0a0a0f] text-white relative z-0">
+                            
+                            <div className="text-center mb-16">
+                                <h1 className="text-4xl sm:text-5xl font-black text-white tracking-tight uppercase neon-text">
+                                    Mapa Conceptual del Torneo
+                                </h1>
+                                <p className="text-arcade-accent font-medium mt-2">Diagrama de flujo de progreso y resultados</p>
+                            </div>
+                            
+                            <div className="relative">
+                                <BracketLines matches={bracketDraft} isConceptual={true} />
+                                
+                                <div className="flex gap-16 min-w-max">
+                                    
+                                    {/* Columnas W y L */}
+                                    <div className="flex flex-col gap-24">
+                                        
+                                        {/* Winners */}
+                                        <div className="relative z-10 flex flex-col">
+                                            <h2 className="text-2xl font-bold text-arcade-accent mb-8 border-b-2 border-arcade-accent pb-2 block w-full">Llave de Ganadores</h2>
+                                            <div className="flex gap-16">
+                                                {wRounds.map((round, idx) => (
+                                                    <div key={'cw-'+idx} className="flex flex-col min-w-[16rem]">
+                                                        <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-4 text-center">Ronda {idx + 1}</div>
+                                                        <div className="flex flex-col justify-around flex-grow gap-6">
+                                                            {round.map(match => (
+                                                                <div key={match.id} className="flex flex-col justify-center flex-1 py-2">
+                                                                    <ConceptualMatchCard match={match} />
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        
+                                        {/* Losers */}
+                                        <div className="relative z-10 flex flex-col">
+                                            <h2 className="text-2xl font-bold text-arcade-secondary mb-8 border-b-2 border-arcade-secondary pb-2 block w-full">Llave de Perdedores</h2>
+                                            <div className="flex gap-16">
+                                                {lRounds.map((round, idx) => (
+                                                    <div key={'cl-'+idx} className="flex flex-col min-w-[16rem]">
+                                                        <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-4 text-center">Ronda {idx + 1}</div>
+                                                        <div className="flex flex-col justify-around flex-grow gap-6">
+                                                            {round.map(match => (
+                                                                <div key={match.id} className="flex flex-col justify-center flex-1 py-2">
+                                                                    <ConceptualMatchCard match={match} />
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Finales sin borde divisor */}
+                                    <div className="relative z-10 flex flex-col justify-center ml-8 pl-16">
+                                        <h2 className="text-2xl font-bold text-arcade-primary mb-8 border-b-2 border-arcade-primary pb-2 block w-full">Finales</h2>
+                                        <div className="flex gap-16">
+                                            {fMatches.map((match, idx) => (
+                                                <div key={match.id} className="flex flex-col min-w-[16rem]">
+                                                    <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-4 text-center">{match.label}</div>
+                                                    <div className="flex flex-col justify-center flex-1 py-2">
+                                                        <ConceptualMatchCard match={match} />
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        
+                                        {bracketDraft.champion && (
+                                            <div className="mt-16 p-8 bg-arcade-primary/10 border-2 border-arcade-primary rounded-xl text-center shadow-[0_0_30px_rgba(250,204,21,0.2)] w-full">
+                                                <div className="text-arcade-primary font-bold text-sm uppercase tracking-widest mb-2">🏅 Campeón del Torneo</div>
+                                                <div className="text-3xl font-black text-white uppercase">{bracketDraft.champion.name}</div>
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // RENDERIZADO NORMAL: INTERFAZ ARCADE
+            return (
+                <div className="fixed inset-0 flex flex-col p-3 sm:p-6 bg-arcade-bg text-white overflow-hidden">
+                    
+                    <div className="flex justify-between items-center gap-2 sm:gap-4 mb-2 sm:mb-6 shrink-0 relative z-50 no-print">
+                        <div className="flex items-center gap-2 sm:gap-3">
+                            <button 
+                                onClick={() => setIsNavOpen(!isNavOpen)} 
+                                className="p-2 bg-arcade-card border border-arcade-dim rounded hover:border-arcade-accent hover:text-arcade-accent text-white transition-colors shadow-lg"
+                            >
+                                {isNavOpen ? <SVGClose /> : <SVGMenu />}
+                            </button>
+                            
+                            <div className="flex gap-2">
+                                <button 
+                                    onClick={() => scrollToSection('winners-bracket-section')} 
+                                    className="px-2 sm:px-3 py-1 bg-arcade-card border border-arcade-dim rounded text-[9px] sm:text-[11px] font-bold text-arcade-accent hover:border-arcade-accent hover:bg-arcade-accent/10 transition-colors shadow-lg uppercase tracking-wider"
+                                >
+                                    Ganadores
+                                </button>
+                                <button 
+                                    onClick={() => scrollToSection('losers-bracket-section')} 
+                                    className="px-2 sm:px-3 py-1 bg-arcade-card border border-arcade-dim rounded text-[9px] sm:text-[11px] font-bold text-arcade-secondary hover:border-arcade-secondary hover:bg-arcade-secondary/10 transition-colors shadow-lg uppercase tracking-wider"
+                                >
+                                    Perdedores
+                                </button>
+                            </div>
+
+                            <h1 className="font-heading text-xl sm:text-4xl text-white neon-text uppercase tracking-wide flex items-center gap-1 sm:gap-3 ml-1 sm:ml-2">
+                                <SVGSword /> TORNEO EN CURSO
+                            </h1>
+                        </div>
+                        <div className="flex gap-2 sm:gap-3">
+                            <button onClick={() => setIsExportingMap(true)} className="flex items-center gap-1 sm:gap-2 text-white hover:text-black border border-white hover:bg-white px-2 sm:px-3 py-1 rounded transition-colors text-[10px] sm:text-sm font-bold shadow-[0_0_10px_rgba(255,255,255,0.2)]">
+                                <SVGFlowchart /> <span className="hidden sm:inline">Mapa Conceptual</span>
+                            </button>
+                            <button onClick={handleExport} className="flex items-center gap-1 sm:gap-2 text-arcade-accent hover:text-white text-[10px] sm:text-sm border border-arcade-accent/50 hover:border-arcade-accent px-2 sm:px-3 py-1 rounded transition-colors bg-arcade-accent/10 hover:bg-arcade-accent/20">
+                                <SVGSave /> <span className="hidden sm:inline">Guardar Progreso</span>
+                            </button>
+                            <button onClick={() => { if(window.confirm('¿Seguro que quieres abandonar? Los datos no guardados se perderán.')) setView('SETUP') }} className="text-slate-400 hover:text-white text-[10px] sm:text-sm border border-slate-600 hover:border-slate-400 px-2 sm:px-3 py-1 rounded transition-colors">
+                                Abandonar
+                            </button>
+                        </div>
+                    </div>
+
+                    {isNavOpen && (
+                        <div className="absolute top-14 sm:top-20 left-3 sm:left-6 w-64 sm:w-72 max-h-[70vh] bg-arcade-card border-2 border-arcade-dim rounded-lg shadow-[0_0_40px_rgba(0,0,0,0.8)] z-50 flex flex-col overflow-hidden fade-in no-print">
+                            <div className="p-3 border-b border-arcade-dim bg-slate-800/50 font-bold text-sm tracking-widest uppercase flex justify-between items-center shrink-0">
+                                <span>Navegador Rápido</span>
+                            </div>
+                            <div className="overflow-y-auto p-2 custom-scrollbar">
+                                
+                                <div className="mb-2">
+                                    <button onClick={() => toggleSection('w')} className="flex justify-between items-center w-full p-2 text-left border-b border-arcade-accent/30 text-arcade-accent font-bold text-xs uppercase hover:bg-white/5 transition-colors rounded-t cursor-pointer">
+                                        <span>Llave de Ganadores ({wMatches.length})</span>
+                                        {openSections.w ? <SVGChevronDown /> : <SVGChevronRight />}
+                                    </button>
+                                    {openSections.w && (
+                                        <div className="mt-1 space-y-0.5">
+                                            {wMatches.map(m => (
+                                                <button key={`nav-${m.id}`} onClick={() => scrollToMatch(m.id)} className={`block w-full text-left px-2 py-1.5 text-[11px] hover:text-white hover:bg-arcade-accent/20 rounded transition-colors flex items-center justify-between ${m.winner ? 'opacity-50' : 'text-slate-300'}`}>
+                                                    <div className="flex items-center truncate pr-2">
+                                                        <span className="font-bold text-arcade-accent w-10 shrink-0">{m.id}</span> 
+                                                        <span className="truncate">{m.p1 ? m.p1.name : 'TBD'} <span className="text-slate-500 text-[9px] mx-1">vs</span> {m.p2 ? m.p2.name : 'TBD'}</span>
+                                                    </div>
+                                                    {m.winner && <SVGCheck />}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="mb-2">
+                                    <button onClick={() => toggleSection('l')} className="flex justify-between items-center w-full p-2 text-left border-b border-arcade-secondary/30 text-arcade-secondary font-bold text-xs uppercase hover:bg-white/5 transition-colors rounded-t cursor-pointer">
+                                        <span>Llave de Perdedores ({lMatches.length})</span>
+                                        {openSections.l ? <SVGChevronDown /> : <SVGChevronRight />}
+                                    </button>
+                                    {openSections.l && (
+                                        <div className="mt-1 space-y-0.5">
+                                            {lMatches.map(m => (
+                                                <button key={`nav-${m.id}`} onClick={() => scrollToMatch(m.id)} className={`block w-full text-left px-2 py-1.5 text-[11px] hover:text-white hover:bg-arcade-secondary/20 rounded transition-colors flex items-center justify-between ${m.winner ? 'opacity-50' : 'text-slate-300'}`}>
+                                                    <div className="flex items-center truncate pr-2">
+                                                        <span className="font-bold text-arcade-secondary w-10 shrink-0">{m.id}</span> 
+                                                        <span className="truncate">{m.p1 ? m.p1.name : 'TBD'} <span className="text-slate-500 text-[9px] mx-1">vs</span> {m.p2 ? m.p2.name : 'TBD'}</span>
+                                                    </div>
+                                                    {m.winner && <SVGCheck />}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {fMatches.length > 0 && (
+                                    <div className="mb-1">
+                                        <button onClick={() => toggleSection('f')} className="flex justify-between items-center w-full p-2 text-left border-b border-arcade-primary/30 text-arcade-primary font-bold text-xs uppercase hover:bg-white/5 transition-colors rounded-t cursor-pointer">
+                                            <span>Finales ({fMatches.length})</span>
+                                            {openSections.f ? <SVGChevronDown /> : <SVGChevronRight />}
+                                        </button>
+                                        {openSections.f && (
+                                            <div className="mt-1 space-y-0.5">
+                                                {fMatches.map(m => (
+                                                    <button key={`nav-${m.id}`} onClick={() => scrollToMatch(m.id)} className={`block w-full text-left px-2 py-1.5 text-[11px] hover:text-white hover:bg-arcade-primary/20 rounded transition-colors flex items-center justify-between ${m.winner ? 'opacity-50' : 'text-slate-300'}`}>
+                                                        <div className="flex items-center truncate pr-2">
+                                                            <span className="font-bold text-arcade-primary w-10 shrink-0">{m.id}</span> 
+                                                            <span className="truncate">{m.p1 ? m.p1.name : 'TBD'} <span className="text-slate-500 text-[9px] mx-1">vs</span> {m.p2 ? m.p2.name : 'TBD'}</span>
+                                                        </div>
+                                                        {m.winner && <SVGCheck />}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {bracketDraft.champion && (
+                        <div className="mb-4 sm:mb-6 p-3 sm:p-6 bg-gradient-to-r from-arcade-primary/20 via-arcade-primary/10 to-transparent border-l-4 border-arcade-primary rounded shrink-0 fade-in flex items-center gap-4 sm:gap-6 relative z-10">
+                            <div className="bg-arcade-primary text-black p-2 sm:p-4 rounded-full shadow-[0_0_20px_rgba(250,204,21,0.6)]">
+                                <SVGUser />
+                            </div>
+                            <div>
+                                <h2 className="text-arcade-primary font-heading text-lg sm:text-2xl uppercase tracking-widest leading-none">¡TENEMOS UN CAMPEÓN!</h2>
+                                <p className="text-xl sm:text-4xl font-bold text-white uppercase">{bracketDraft.champion.name}</p>
+                            </div>
+                        </div>
+                    )}
+                    {/* Bracket Main View (El único área que hace scroll) */}
+                    <div id="bracket-container" className="flex-grow overflow-x-auto overflow-y-auto pb-12 pr-12 relative w-full h-full rounded border border-slate-800/50 bg-black/20">
+                        {/* NUEVO CONTENEDOR WRAPPER: Obliga al SVG a ser tan grande como el torneo (min-w-max), recuperando las líneas */}
+                        <div className="relative min-w-max min-h-max">
+                            <BracketLines matches={bracketDraft} />
+                            
+                            <div className="flex gap-6 sm:gap-16 min-w-max pt-4 sm:pt-6 pl-2 sm:pl-4">
+                                
+                                <div className="flex flex-col gap-10 sm:gap-16">
+                                    
+                                    <div id="winners-bracket-section" className="relative z-10 flex flex-col min-h-[250px] sm:min-h-[400px]">
+                                    <h2 className="font-heading text-lg sm:text-2xl text-arcade-accent mb-3 sm:mb-6 uppercase tracking-widest flex items-center gap-2 shrink-0 border-b-2 border-arcade-accent pb-2 w-full">
+                                        <span className="w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full bg-arcade-accent neon-border"></span> Llave de Ganadores
+                                    </h2>
+                                    <div className="flex gap-6 sm:gap-16 flex-grow">
+                                        {wRounds.map((round, idx) => (
+                                            <div key={'w-'+idx} className="flex flex-col min-w-[12rem] sm:min-w-[16rem]">
+                                                <div className="text-slate-500 text-[9px] sm:text-xs font-bold uppercase tracking-widest mb-2 sm:mb-4 text-center shrink-0">Ronda {idx + 1}</div>
+                                                <div className="flex flex-col justify-around flex-grow gap-2">
+                                                    {round.map(match => (
+                                                        <div key={match.id} className="flex flex-col justify-center flex-1 py-1">
+                                                            <MatchCard match={match} onWinnerSelect={handleDeclareWinner} onCharacterChange={handleCharacterChange} />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div id="losers-bracket-section" className="relative z-10 flex flex-col min-h-[250px] sm:min-h-[400px]">
+                                    <h2 className="font-heading text-lg sm:text-2xl text-arcade-secondary mb-3 sm:mb-6 uppercase tracking-widest flex items-center gap-2 shrink-0 border-b-2 border-arcade-secondary pb-2 w-full">
+                                        <span className="w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full bg-arcade-secondary shadow-[0_0_10px_rgba(232,28,255,0.7)]"></span> Llave de Perdedores
+                                    </h2>
+                                    <div className="flex gap-6 sm:gap-16 flex-grow">
+                                        {lRounds.map((round, idx) => (
+                                            <div key={'l-'+idx} className="flex flex-col min-w-[12rem] sm:min-w-[16rem]">
+                                                <div className="text-slate-500 text-[9px] sm:text-xs font-bold uppercase tracking-widest mb-2 sm:mb-4 text-center shrink-0">Ronda {idx + 1}</div>
+                                                <div className="flex flex-col justify-around flex-grow gap-2">
+                                                    {round.map(match => (
+                                                        <div key={match.id} className="flex flex-col justify-center flex-1 py-1">
+                                                            <MatchCard match={match} onWinnerSelect={handleDeclareWinner} onCharacterChange={handleCharacterChange} />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="relative z-10 flex flex-col justify-center ml-2 sm:ml-8 pl-6 sm:pl-12">
+                                <h2 className="font-heading text-lg sm:text-2xl text-arcade-primary mb-3 sm:mb-6 uppercase tracking-widest flex items-center gap-2 shrink-0 border-b-2 border-arcade-primary pb-2 w-full">
+                                    <span className="w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full bg-arcade-primary shadow-[0_0_10px_rgba(250,204,21,0.7)]"></span> Finales
+                                </h2>
+                                <div className="flex gap-6 sm:gap-16">
+                                    {fMatches.map((match, idx) => (
+                                        <div key={match.id} className="flex flex-col min-w-[12rem] sm:min-w-[16rem]">
+                                            <div className="text-arcade-primary/70 text-[9px] sm:text-xs font-bold uppercase tracking-widest mb-2 sm:mb-4 text-center shrink-0">{match.label}</div>
+                                            <div className="flex flex-col justify-center flex-1 py-1">
+                                                <MatchCard match={match} onWinnerSelect={handleDeclareWinner} onCharacterChange={handleCharacterChange} />
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            
+                        </div>
+                        </div> {/* CIERRE DEL NUEVO CONTENEDOR WRAPPER */}
+                    </div>
+                    
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
